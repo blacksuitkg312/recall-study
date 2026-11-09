@@ -1,0 +1,13 @@
+{
+  "name": "recall",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Recall — a faster, ad-free, local-first flashcard study app with spaced repetition.",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": ["flashcards", "spaced-repetition", "study", "quizlet"],
+  "license": "MIT"
+}
