@@ -230,6 +230,36 @@ async function main() {
         document.querySelector('[data-q="good"]')?.click();
         await sleep(250);
 
+        // Pronunciation + in-session edit/delete
+        check('study card tools present', document.querySelectorAll('.study-tools .card-tool').length >= 3);
+        check('pronounce button present', !!document.querySelector('.study-tools [data-tool="speak"]'));
+
+        document.querySelector('.study-tools [data-tool="edit"]')?.click();
+        await sleep(300);
+        check('card editor opens from study', !!document.querySelector('#ce-term'));
+        if (document.querySelector('#ce-term')) {
+          document.querySelector('#ce-term').value = 'edited-in-session';
+          document.querySelector('.modal__actions [data-action="2"]')?.click();
+        }
+        await sleep(400);
+        check('in-session edit saves', store.getSet(set.id).cards.some((c) => c.term === 'edited-in-session'));
+        check('edited card shown in session', document.body.textContent.includes('edited-in-session'));
+
+        const beforeSessionDelete = store.getSet(set.id).cards.length;
+        document.querySelector('.study-tools [data-tool="delete"]')?.click();
+        await sleep(300);
+        check('delete confirmation opens', !!document.querySelector('.modal'));
+        document.querySelector('.modal__actions [data-action="1"]')?.click();
+        await sleep(400);
+        check(
+          'in-session delete removes card',
+          store.getSet(set.id).cards.length === beforeSessionDelete - 1
+        );
+        check(
+          'session continues after delete',
+          !!document.querySelector('#flashcard') || document.body.textContent.includes('No cards left')
+        );
+
         location.hash = '#/study/' + set.id + '/test';
         await sleep(400);
         check('test question renders', !!document.querySelector('.quiz-card__question'));
@@ -237,6 +267,125 @@ async function main() {
         location.hash = '#/study/' + set.id + '/match';
         await sleep(400);
         check('match board renders', document.querySelectorAll('.match-tile').length >= 4);
+
+        // Set-page card tools (pronounce / info / edit / delete)
+        location.hash = '#/set/' + set.id;
+        await sleep(400);
+        const setCards = store.getSet(set.id).cards;
+        check(
+          'term rows have card tools',
+          document.querySelectorAll('.term-row .card-tool').length === setCards.length * 4
+        );
+        check(
+          'term row speaker present',
+          document.querySelectorAll('.term-row [data-tool="speak"]').length === setCards.length
+        );
+
+        const row = document.querySelector('.term-row');
+        const rowCardId = row?.dataset.cardId;
+        row?.querySelector('[data-tool="edit"]')?.click();
+        await sleep(300);
+        check('card editor opens from set', !!document.querySelector('#ce-term'));
+        if (document.querySelector('#ce-term')) {
+          document.querySelector('#ce-term').value = 'set-edited';
+          document.querySelector('.modal__actions [data-action="2"]')?.click();
+        }
+        await sleep(400);
+        check(
+          'set edit saves',
+          store.getSet(set.id).cards.some((c) => c.id === rowCardId && c.term === 'set-edited')
+        );
+
+        const beforeSetDelete = store.getSet(set.id).cards.length;
+        document
+          .querySelector('.term-row[data-card-id="' + rowCardId + '"] [data-tool="delete"]')
+          ?.click();
+        await sleep(300);
+        check('set delete confirmation opens', !!document.querySelector('.modal'));
+        document.querySelector('.modal__actions [data-action="1"]')?.click();
+        await sleep(400);
+        check(
+          'set delete removes card',
+          store.getSet(set.id).cards.length === beforeSetDelete - 1
+        );
+
+        // Word info panel — seed the lookup cache so this test is deterministic.
+        const wiCard = store.getSet(set.id).cards[0];
+        const wiSettings = store.getState().settings;
+        const wiSource = wiSettings.sourceLang || 'en';
+        const wiTarget = wiSettings.targetLang || 'es';
+        const lookupCache = JSON.parse(localStorage.getItem('recall.lookup.v1') || '{}');
+        lookupCache['all:' + wiCard.term + ':' + wiSource + ':' + wiTarget] = {
+          ts: Date.now(),
+          data: {
+            term: wiCard.term,
+            source: wiSource,
+            target: wiTarget,
+            summary: {
+              title: 'Test article',
+              extract: 'A deterministic test summary.',
+              image: '',
+              url: 'https://example.com',
+            },
+            definitions: [
+              {
+                partOfSpeech: 'noun',
+                language: 'English',
+                definitions: [{ text: 'A deterministic definition.', example: '' }],
+              },
+            ],
+            images: [
+              {
+                thumb:
+                  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+                full: '',
+                title: 'Test image',
+                page: 'https://example.com',
+              },
+            ],
+            translations: {
+              primary: 'prueba',
+              groups: [{ partOfSpeech: 'noun', translations: ['prueba', 'ensayo'] }],
+              provider: 'Test',
+            },
+            errors: { summary: '', definitions: '', images: '', translations: '' },
+          },
+        };
+        localStorage.setItem('recall.lookup.v1', JSON.stringify(lookupCache));
+
+        document.querySelector('.term-row [data-tool="info"]')?.click();
+        await sleep(500);
+        check('word info modal opens', !!document.querySelector('.wi'));
+        check(
+          'word info sections present',
+          !!document.querySelector('#wi-summary') &&
+            !!document.querySelector('#wi-defs') &&
+            !!document.querySelector('#wi-trans') &&
+            !!document.querySelector('#wi-images')
+        );
+        check(
+          'word info language pickers',
+          !!document.querySelector('#wi-from') && !!document.querySelector('#wi-to')
+        );
+        check('word info pronounce button', !!document.querySelector('#wi-speak'));
+        check('word info summary renders', document.body.textContent.includes('A deterministic test summary.'));
+        check(
+          'word info definitions render',
+          document.body.textContent.includes('A deterministic definition.')
+        );
+        check('word info translations render', !!document.querySelector('.wi-primary'));
+        check('word info images render', !!document.querySelector('.wi-thumb'));
+        const wiActions = document.querySelectorAll('.modal__actions [data-action]');
+        wiActions[wiActions.length - 1]?.click();
+        await sleep(250);
+
+        // Settings exposes pronunciation + online lookup controls.
+        document.querySelector('#settings-btn')?.click();
+        await sleep(300);
+        check('settings has pronunciation language', !!document.querySelector('#st-speech'));
+        check('settings has online toggle', !!document.querySelector('#st-online'));
+        document.querySelector('.modal__actions [data-action="0"]')?.click();
+        await sleep(250);
 
         location.hash = '#/progress';
         await sleep(400);

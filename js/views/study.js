@@ -7,6 +7,7 @@ import { icon } from '../icons.js';
 import { esc, shuffle, sample, answersMatch, plural, clamp } from '../utils.js';
 import { toast, confirmDialog } from '../components.js';
 import { schedule, isDue } from '../srs.js';
+import { cardToolsHTML, bindCardTools } from '../cardtools.js';
 
 const MODE_META = {
   flashcards: { title: 'Flashcards', icon: 'layers' },
@@ -158,6 +159,11 @@ function startFlashcards({ set, valid, stage, setProgress, cleanupFns }) {
         </div>
       </div>
 
+      <div class="study-tools">
+        <span class="faint">Card ${i + 1} of ${order.length}</span>
+        ${cardToolsHTML()}
+      </div>
+
       ${
         flipped
           ? `<div class="rating">
@@ -193,6 +199,24 @@ function startFlashcards({ set, valid, stage, setProgress, cleanupFns }) {
     stage.querySelectorAll('[data-q]').forEach((btn) => {
       btn.addEventListener('click', () => rate(btn.dataset.q));
     });
+
+    bindCardTools(stage, {
+      card,
+      onChanged: render,
+      onDeleted: removeCard,
+    });
+  };
+
+  const removeCard = (card) => {
+    const idx = order.indexOf(card);
+    if (idx >= 0) order.splice(idx, 1);
+    if (!order.length) {
+      showSessionEmpty(stage, set);
+      return;
+    }
+    if (i >= order.length) i = order.length - 1;
+    flipped = false;
+    render();
   };
 
   const flip = () => {
@@ -265,14 +289,22 @@ function startLearn({ set, pool, valid, stage, setProgress, cleanupFns }) {
   const due = valid.filter((c) => isDue(c.srs));
   const source = due.length ? due : valid;
   let queue = shuffle(source);
-  const totalUnique = new Set(queue.map((c) => c.id)).size;
+  let totalUnique = new Set(queue.map((c) => c.id)).size;
   const mastered = new Set();
   const missed = new Set();
   let correctFirstTry = 0;
   let totalAttempts = 0;
+  let removeKey = () => {};
+  let cancelFeedback = () => {};
+  cleanupFns.push(() => {
+    removeKey();
+    cancelFeedback();
+  });
 
   const render = () => {
     if (!queue.length) return complete();
+    removeKey();
+    cancelFeedback();
     const card = queue[0];
     setProgress(mastered.size, totalUnique);
 
@@ -296,6 +328,9 @@ function startLearn({ set, pool, valid, stage, setProgress, cleanupFns }) {
         </div>
         <div id="feedback"></div>
       </div>
+      <div class="study-tools">
+        ${cardToolsHTML()}
+      </div>
       <div class="study__controls">
         <button class="btn btn--ghost btn--sm" id="end-learn">${icon('x')} End session</button>
         <span class="faint" style="font-size:12px">${due.length ? `${plural(due.length, 'card')} due for review` : 'Learning all cards'}</span>
@@ -303,7 +338,6 @@ function startLearn({ set, pool, valid, stage, setProgress, cleanupFns }) {
     `;
 
     let locked = false;
-    let removeKey = () => {};
     const onPick = (value, btn) => {
       if (locked) return;
       locked = true;
@@ -326,20 +360,26 @@ function startLearn({ set, pool, valid, stage, setProgress, cleanupFns }) {
         card.srs = schedule(card.srs, missed.has(card.id) ? 'hard' : 'good');
         store.recordReview();
         queue.shift();
-        showFeedback('correct', 'Correct', () => render());
+        cancelFeedback = showFeedback('correct', 'Correct', () => render());
       } else {
         missed.add(card.id);
         card.srs = schedule(card.srs, 'again');
         store.recordReview();
         queue.shift();
         queue.push(card); // revisit later this session
-        showFeedback('wrong', `Not quite — ${esc(correctValue)}`, () => render());
+        cancelFeedback = showFeedback('wrong', `Not quite — ${esc(correctValue)}`, () => render());
       }
       setProgress(mastered.size, totalUnique);
     };
 
     stage.querySelectorAll('.option').forEach((btn) => {
       btn.addEventListener('click', () => onPick(btn.dataset.value, btn));
+    });
+
+    bindCardTools(stage, {
+      card,
+      onChanged: render,
+      onDeleted: removeCard,
     });
 
     const onKey = (e) => {
@@ -351,7 +391,6 @@ function startLearn({ set, pool, valid, stage, setProgress, cleanupFns }) {
     };
     document.addEventListener('keydown', onKey);
     removeKey = () => document.removeEventListener('keydown', onKey);
-    cleanupFns.push(removeKey);
 
     stage.querySelector('#end-learn')?.addEventListener('click', async () => {
       const ok = await confirmDialog({
@@ -379,6 +418,22 @@ function startLearn({ set, pool, valid, stage, setProgress, cleanupFns }) {
     });
   };
 
+  const removeCard = (card) => {
+    queue = queue.filter((c) => c.id !== card.id);
+    mastered.delete(card.id);
+    missed.delete(card.id);
+    const vi = valid.indexOf(card);
+    if (vi >= 0) valid.splice(vi, 1);
+    const pi = pool.indexOf(card);
+    if (pi >= 0) pool.splice(pi, 1);
+    totalUnique = mastered.size + new Set(queue.map((c) => c.id)).size;
+    if (!queue.length) {
+      showSessionEmpty(stage, set);
+      return;
+    }
+    render();
+  };
+
   render();
 }
 
@@ -391,8 +446,11 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
   let i = 0;
   let correct = 0;
   let answered = 0;
+  let cancelFeedback = () => {};
+  cleanupFns.push(() => cancelFeedback());
 
   const render = () => {
+    cancelFeedback();
     if (i >= cards.length) return complete();
     const card = cards[i];
     const type = types[i % types.length];
@@ -407,7 +465,7 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
     answered += 1;
     if (isCorrect) correct += 1;
     card_srs_update(isCorrect);
-    showFeedback(isCorrect ? 'correct' : 'wrong', isCorrect ? 'Correct' : `Answer: ${esc(correctText)}`, () => {
+    cancelFeedback = showFeedback(isCorrect ? 'correct' : 'wrong', isCorrect ? 'Correct' : `Answer: ${esc(correctText)}`, () => {
       i += 1;
       render();
     });
@@ -436,6 +494,7 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
         </div>
         <div id="feedback"></div>
       </div>
+      <div class="study-tools">${cardToolsHTML()}</div>
     `;
     let locked = false;
     stage.querySelectorAll('.option').forEach((btn) => {
@@ -451,6 +510,7 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
         submit(ok, correctValue);
       });
     });
+    bindTestTools(card);
   };
 
   const renderWritten = (card) => {
@@ -469,6 +529,7 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
         </div>
         <div id="feedback"></div>
       </div>
+      <div class="study-tools">${cardToolsHTML()}</div>
     `;
     const input = stage.querySelector('#written-input');
     input.focus();
@@ -484,6 +545,7 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') check();
     });
+    bindTestTools(card);
   };
 
   const renderTF = (card) => {
@@ -506,6 +568,7 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
         </div>
         <div id="feedback"></div>
       </div>
+      <div class="study-tools">${cardToolsHTML()}</div>
     `;
     let locked = false;
     stage.querySelectorAll('.option').forEach((btn) => {
@@ -523,6 +586,7 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
         submit(ok, isTrue ? 'True' : 'False');
       });
     });
+    bindTestTools(card);
   };
 
   const complete = () => {
@@ -538,6 +602,25 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
         { label: 'Correct', value: correct },
         { label: 'Questions', value: answered },
       ],
+    });
+  };
+
+  const removeCard = (card) => {
+    const idx = cards.indexOf(card);
+    if (idx >= 0) cards.splice(idx, 1);
+    const vi = valid.indexOf(card);
+    if (vi >= 0) valid.splice(vi, 1);
+    const pi = pool.indexOf(card);
+    if (pi >= 0) pool.splice(pi, 1);
+    if (!cards.length || i >= cards.length) return complete();
+    render();
+  };
+
+  const bindTestTools = (card) => {
+    bindCardTools(stage, {
+      card,
+      onChanged: render,
+      onDeleted: removeCard,
     });
   };
 
@@ -707,9 +790,14 @@ function showFeedback(type, message, onNext) {
   const feedback = document.getElementById('feedback');
   if (!feedback) {
     onNext();
-    return;
+    return () => {};
   }
   let done = false;
+  const cancel = () => {
+    if (done) return;
+    done = true;
+    document.removeEventListener('keydown', onKey);
+  };
   const next = () => {
     if (done) return;
     done = true;
@@ -735,11 +823,28 @@ function showFeedback(type, message, onNext) {
   btn.addEventListener('click', next);
   document.addEventListener('keydown', onKey);
   btn.focus();
+  return cancel;
+}
+
+/** Shown when every card in the current session was deleted. */
+function showSessionEmpty(stage, set) {
+  const backHref = set.id === '__due__' ? '#/' : `#/set/${set.id}`;
+  stage.innerHTML = `
+    <div class="empty">
+      <div class="empty__icon">${icon('cards')}</div>
+      <h3>No cards left</h3>
+      <p>All cards in this session were deleted.</p>
+      <a href="${backHref}" class="btn btn--primary">${icon('back')} Back to set</a>
+    </div>
+  `;
+  const counter = document.getElementById('study-counter');
+  if (counter) counter.textContent = 'Done';
+  const bar = document.getElementById('study-progress');
+  if (bar) bar.style.width = '100%';
 }
 
 /** Full-session completion screen. */
-function showComplete(stage, { set, mode, title, subtitle, stats }) {
-  const backHref = set.id === '__due__' ? '#/' : `#/set/${set.id}`;
+function showComplete(stage, { set, mode, title, subtitle, stats }) {  const backHref = set.id === '__due__' ? '#/' : `#/set/${set.id}`;
   const retryHref = set.id === '__due__' ? '#/due' : `#/study/${set.id}/${mode}`;
   stage.innerHTML = `
     <div class="complete">

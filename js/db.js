@@ -13,14 +13,22 @@ const ACCENTS = [
   '#f59e0b', '#10b981', '#06b6d4', '#3b82f6',
 ];
 
+function defaultSettings() {
+  return {
+    theme: 'light',
+    dailyGoal: 20,
+    speechLang: 'en-US',
+    sourceLang: 'en',
+    targetLang: 'es',
+    onlineLookups: true,
+  };
+}
+
 function defaultState() {
   return {
     version: SCHEMA_VERSION,
     sets: [],
-    settings: {
-      theme: 'light',
-      dailyGoal: 20,
-    },
+    settings: defaultSettings(),
     activity: {
       xp: 0,
       streak: 0,
@@ -33,7 +41,7 @@ function defaultState() {
 function migrate(state) {
   // Future schema migrations go here.
   if (!state.version) state.version = SCHEMA_VERSION;
-  if (!state.settings) state.settings = { theme: 'light', dailyGoal: 20 };
+  state.settings = { ...defaultSettings(), ...(state.settings || {}) };
   if (!state.activity) state.activity = { xp: 0, streak: 0, lastStudyDate: null, history: {} };
   if (!state.activity.history) state.activity.history = {};
   state.sets = (state.sets || []).map((s) => ({
@@ -108,6 +116,17 @@ class Store {
     this._emit();
   }
 
+  /** Update any settings in one go. */
+  updateSettings(patch = {}) {
+    this.state.settings = { ...this.state.settings, ...patch };
+    this.state.settings.dailyGoal = Math.max(
+      1,
+      Math.min(500, Number(this.state.settings.dailyGoal) || 20)
+    );
+    this._applyTheme();
+    this._emit();
+  }
+
   /* ------------------------------- sets ------------------------------- */
 
   getSets() {
@@ -116,6 +135,13 @@ class Store {
 
   getSet(id) {
     return this.state.sets.find((s) => s.id === id) || null;
+  }
+
+  /** Find the set that owns a card (used when editing from a study session). */
+  findSetByCardId(cardId) {
+    return (
+      this.state.sets.find((s) => s.cards.some((c) => c.id === cardId)) || null
+    );
   }
 
   createSet({ title = 'Untitled set', description = '', cards = [] } = {}) {

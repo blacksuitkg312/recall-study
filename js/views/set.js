@@ -7,6 +7,7 @@ import { icon } from '../icons.js';
 import { esc, plural, timeAgo } from '../utils.js';
 import { renderHeader, bindHeader, confirmDialog, toast } from '../components.js';
 import { setMastery, cardMastery, dueLabel, isDue } from '../srs.js';
+import { cardToolsHTML, bindCardTools } from '../cardtools.js';
 
 const MODES = [
   { id: 'flashcards', name: 'Flashcards', icon: 'layers', desc: 'Flip through cards at your own pace.' },
@@ -69,13 +70,16 @@ export function renderSet({ id }) {
                 ${set.cards
                   .map(
                     (c, i) => `
-                  <div class="term-row">
+                  <div class="term-row" data-card-id="${c.id}">
                     <span class="term-row__num">${i + 1}</span>
                     <span class="term-row__term">${esc(c.term || '—')}</span>
                     <span class="term-row__def">${esc(c.definition || '—')}</span>
                     <span class="term-row__actions">
-                      <span class="chip ${cardMastery(c.srs) >= 70 ? 'chip--success' : ''}" title="Mastery">${cardMastery(c.srs)}%</span>
-                      <span class="chip" title="Next review">${dueLabel(c.srs)}</span>
+                      ${cardToolsHTML()}
+                      <span class="term-row__meta">
+                        <span class="chip ${cardMastery(c.srs) >= 70 ? 'chip--success' : ''}" title="Mastery">${cardMastery(c.srs)}%</span>
+                        <span class="chip" title="Next review">${dueLabel(c.srs)}</span>
+                      </span>
                     </span>
                   </div>`
                   )
@@ -136,6 +140,18 @@ export function mountSet({ id }) {
   bindHeader();
   const set = store.getSet(id);
   if (!set) return;
+
+  const refresh = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+  set.cards.forEach((card) => {
+    const row = document.querySelector(`.term-row[data-card-id="${card.id}"]`);
+    if (!row) return;
+    bindCardTools(row, {
+      card,
+      onChanged: refresh,
+      onDeleted: refresh,
+    });
+  });
 
   document.getElementById('more-btn')?.addEventListener('click', () => {
     import('../components.js').then(({ openModal, closeModal }) => {

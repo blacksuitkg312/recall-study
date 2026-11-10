@@ -54,6 +54,26 @@ On first launch you can click **Try a sample set** to load two ready-made decks.
 - Import/export the whole library (or a single set) as JSON.
 - Full-text search across set titles, descriptions, and cards.
 
+### Pronunciation
+- One-click **speaker buttons** on every term, study card, and translation.
+- Uses the browser's built-in Web Speech API — no account, network request, or API key.
+- Choose the pronunciation language in **Settings**.
+
+### Edit or delete while studying
+- Every study card has inline **pronounce / word info / edit / delete** controls.
+- Fix a typo or remove a bad card without ending the session.
+- The same tools are available on each row of the set's term list.
+
+### Word info from the internet
+- **Translations** grouped by part of speech, with a primary suggestion and
+  clickable alternatives (Google Translate, with a MyMemory fallback).
+- **Definitions** and examples from Wiktionary.
+- **About** summaries and lead images from Wikipedia.
+- **Pictures** from Wikimedia Commons.
+- From/To language pickers and a swap button inside the panel.
+- Results are cached locally for a week; turn lookups off in **Settings** to stay
+  fully offline.
+
 ### Four study modes
 - **Flashcards** — flip, navigate, shuffle, and self-rate with SRS ratings.
 - **Learn** — adaptive multiple choice that re-queues anything you miss and
@@ -105,7 +125,11 @@ Ratings map to SM-2 quality:
 ## Data and privacy
 
 - All data lives in your browser's `localStorage` under `recall.db.v1`.
-- Nothing is sent to a server. There is no backend.
+- Your sets and review history are never sent to a server. There is no backend.
+- **Word info** optionally sends only the term you are looking up to Wikipedia,
+  Wiktionary, Wikimedia Commons, and Google Translate. Disable **Allow online
+  lookups** in Settings to keep the app fully offline.
+- Pronunciation uses the browser's local speech engine and needs no network.
 - Use **Export** on the library page to back up everything as JSON.
 - Clearing site data or your browser storage removes your sets — export first.
 
@@ -120,11 +144,17 @@ js/
   srs.js                SM-2 spaced-repetition scheduling
   utils.js              Helpers (shuffle, escaping, answer matching, dates)
   icons.js              Inline SVG icon set
-  components.js         Header, toasts, modals, empty states
+  components.js         Header, toasts, modals, settings, empty states
+  languages.js          Language metadata for speech + translation
+  speech.js             Web Speech API pronunciation
+  enrich.js             Keyless online lookups (Wikipedia, Wiktionary, Commons, Translate)
+  cardtools.js          Inline pronounce / info / edit / delete controls
+  cardeditor.js         Edit-or-delete card modal
+  wordinfo.js           Rich word info panel
   sample.js             Starter decks
   views/
     dashboard.js        Library, search, import/export
-    set.js              Set detail + study mode picker
+    set.js              Set detail + study mode picker + term tools
     editor.js           Create/edit set and cards
     study.js            Flashcards / Learn / Test / Match engines
     progress.js         Stats, streak, activity chart, mastery
@@ -144,14 +174,14 @@ node scripts/smoke.mjs
 ```
 
 This launches a headless Chrome/Edge, drives the real UI through the DevTools
-Protocol, and checks 23 behaviors (sample decks, CRUD, all study modes, editor
-save, export, progress, due review, persistence). It also fails on any runtime
+Protocol, and checks 47 behaviors (sample decks, CRUD, all study modes, editor
+save, export, progress, due review, persistence, pronunciation buttons,
+in-session edit/delete, word info, and settings). It also fails on any runtime
 console error.
 
 ## Roadmap ideas
 
 - Optional cloud sync and cross-device accounts.
-- Audio pronunciation for language cards.
 - Image cards and cloze deletion.
 - FSRS scheduling as an alternative to SM-2.
 - Import from CSV/Anki.

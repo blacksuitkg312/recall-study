@@ -5,6 +5,7 @@
 import { icon } from './icons.js';
 import { esc } from './utils.js';
 import { store } from './db.js';
+import { languageOptions, speechForCode } from './languages.js';
 
 /* ------------------------------- Header ------------------------------- */
 
@@ -23,6 +24,9 @@ export function renderHeader(active = '') {
         </nav>
         <div class="header__spacer"></div>
         <a href="#/new" class="btn btn--primary btn--sm">${icon('plus')} New set</a>
+        <button class="iconbtn" id="settings-btn" title="Settings" aria-label="Settings">
+          ${icon('settings')}
+        </button>
         <button class="iconbtn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">
           ${icon(theme === 'dark' ? 'sun' : 'moon')}
         </button>
@@ -39,6 +43,7 @@ export function bindHeader() {
       btn.innerHTML = icon(store.getState().settings.theme === 'dark' ? 'sun' : 'moon');
     });
   }
+  document.getElementById('settings-btn')?.addEventListener('click', openSettings);
 }
 
 /* -------------------------------- Toast ------------------------------- */
@@ -67,12 +72,12 @@ export function closeModal() {
   document.body.style.overflow = '';
 }
 
-export function openModal({ title, body, actions = [], onMount }) {
+export function openModal({ title, body, actions = [], onMount, wide = false }) {
   const root = document.getElementById('modal-root');
   if (!root) return;
   root.innerHTML = `
     <div class="modal-backdrop" data-close>
-      <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal ${wide ? 'modal--wide' : ''}" role="dialog" aria-modal="true">
         <h2>${esc(title)}</h2>
         <div class="modal__body">${body || ''}</div>
         <div class="modal__actions">
@@ -158,4 +163,81 @@ export function emptyState({ iconName = 'layers', title, text, action }) {
       ${action || ''}
     </div>
   `;
+}
+
+/* ----------------------------- Settings ------------------------------- */
+
+export function openSettings() {
+  const s = store.getState().settings;
+  const speechCode = (s.speechLang || 'en-US').split('-')[0];
+
+  openModal({
+    title: 'Settings',
+    body: `
+      <div class="field">
+        <label for="st-theme">Theme</label>
+        <select id="st-theme" class="input">
+          <option value="light" ${s.theme !== 'dark' ? 'selected' : ''}>Light</option>
+          <option value="dark" ${s.theme === 'dark' ? 'selected' : ''}>Dark</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="st-goal">Daily goal (cards)</label>
+        <input id="st-goal" class="input" type="number" min="1" max="500" value="${s.dailyGoal}" />
+      </div>
+
+      <div class="field">
+        <label for="st-speech">Pronunciation language</label>
+        <select id="st-speech" class="input">${languageOptions(speechCode)}</select>
+        <span class="faint" style="font-size:12px">Used by the speaker buttons across the app.</span>
+      </div>
+
+      <div class="row gap-8" style="align-items:flex-start">
+        <div class="field" style="flex:1">
+          <label for="st-source">Translate from</label>
+          <select id="st-source" class="input">${languageOptions(s.sourceLang || 'en')}</select>
+        </div>
+        <div class="field" style="flex:1">
+          <label for="st-target">Translate to</label>
+          <select id="st-target" class="input">${languageOptions(s.targetLang || 'es')}</select>
+        </div>
+      </div>
+
+      <label class="check">
+        <input type="checkbox" id="st-online" ${s.onlineLookups !== false ? 'checked' : ''} />
+        <span>Allow online lookups</span>
+      </label>
+      <p class="faint" style="font-size:12px;margin-top:6px">
+        Word info sends the term to Wikipedia, Wiktionary, Wikimedia Commons and Google Translate.
+        Your sets never leave this device.
+      </p>
+    `,
+    actions: [
+      { label: 'Cancel', className: 'btn--ghost', onClick: closeModal },
+      {
+        label: 'Save',
+        className: 'btn--primary',
+        onClick: () => {
+          const theme = document.getElementById('st-theme')?.value || 'light';
+          const dailyGoal = Number(document.getElementById('st-goal')?.value) || 20;
+          const speech = document.getElementById('st-speech')?.value || 'en';
+          const sourceLang = document.getElementById('st-source')?.value || 'en';
+          const targetLang = document.getElementById('st-target')?.value || 'es';
+          const onlineLookups = !!document.getElementById('st-online')?.checked;
+
+          store.updateSettings({
+            theme,
+            dailyGoal,
+            speechLang: speechForCode(speech),
+            sourceLang,
+            targetLang,
+            onlineLookups,
+          });
+          closeModal();
+          toast('Settings saved', 'success');
+        },
+      },
+    ],
+  });
 }
