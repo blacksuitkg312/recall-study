@@ -166,7 +166,41 @@ async function main() {
   await client.send('Log.enable');
   await client.send('Page.enable');
   await client.send('Page.navigate', { url: URL });
-  await sleep(1500);
+  await sleep(1000);
+
+  // Wait for the ES module graph to boot (cold caches can take a few seconds).
+  let booted = false;
+  for (let i = 0; i < 100; i++) {
+    try {
+      const ready = await client.send('Runtime.evaluate', {
+        expression: '!!(window.__recall && window.__recall.store)',
+        returnByValue: true,
+      });
+      if (ready.result?.value) {
+        booted = true;
+        break;
+      }
+    } catch {
+      /* page not ready yet */
+    }
+    await sleep(200);
+  }
+
+  if (!booted) {
+    console.error('The app did not boot within 20 seconds.');
+    if (consoleErrors.length) {
+      console.error('Runtime errors:');
+      consoleErrors.forEach((e) => console.error('  - ' + e));
+    }
+    try {
+      await client.send('Browser.close');
+    } catch {
+      /* ignore */
+    }
+    client.close();
+    killBrowser();
+    process.exit(1);
+  }
 
   const expr = `
     (async () => {
