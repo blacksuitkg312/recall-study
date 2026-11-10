@@ -619,7 +619,10 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
   const bindTestTools = (card) => {
     bindCardTools(stage, {
       card,
-      onChanged: render,
+      onChanged: () => {
+        // Don't re-render a question that has already been answered.
+        if (!stage.querySelector('.feedback')) render();
+      },
       onDeleted: removeCard,
     });
   };
