@@ -21,7 +21,7 @@ function parseRoute() {
 
   if (parts.length === 0) return { name: 'dashboard', params: {} };
 
-  const [head, a, b] = parts;
+  const [head, a, b, c] = parts;
 
   switch (head) {
     case 'progress':
@@ -33,7 +33,10 @@ function parseRoute() {
     case 'edit':
       return { name: 'editor', params: { id: a } };
     case 'study':
-      return { name: 'study', params: { id: a, mode: b || 'flashcards' } };
+      return {
+        name: 'study',
+        params: { id: a, mode: b || 'flashcards', extra: c === 'extra' },
+      };
     case 'due':
       return { name: 'study', params: { id: '__due__', mode: 'learn' } };
     default:

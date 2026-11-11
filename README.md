@@ -76,25 +76,40 @@ On first launch you can click **Try a sample set** to load two ready-made decks.
 
 ### Four study modes
 - **Flashcards** — flip, navigate, shuffle, and self-rate with SRS ratings.
-- **Learn** — adaptive multiple choice that re-queues anything you miss and
-  schedules each card based on your answer.
+- **Learn** — adaptive multiple choice that re-queues anything you miss, walks
+  new cards through short learning steps, and schedules each card based on
+  your answer.
 - **Test** — a mixed quiz of multiple choice, typed answers, and true/false,
-  scored at the end.
+  scored at the end. Practice only: it does not change due dates.
 - **Match** — a timed matching game that reinforces term/definition pairs.
+  Also practice only.
 
 ### Smarter scheduling
 Each card tracks its own ease factor, interval, and due date using an SM-2
 style algorithm. When you study, Recall surfaces the cards you're about to
 forget — not the ones you already know.
 
+- **Learning steps** — new cards move through 1-minute and 10-minute steps
+  before graduating to day-based reviews. A missed review card goes back to
+  the first learning step.
+- **Priority queue** — overdue cards come first, with extra weight for cards
+  that have lapsed, have low ease, or are flagged as leeches.
+- **Daily limits** — separate caps for new cards and reviews (20 and 200 by
+  default, configurable in Settings). When a cap is reached, a "Study ahead"
+  link lets you continue deliberately.
+- **Fuzzed intervals** — intervals of 3+ days get ±5% jitter so cards do not
+  all become due on the same day, with a one-year maximum.
+- **Leech detection** — a card that lapses 8 times is flagged in the set list
+  and in study. Rewriting it clears the flag.
+
 Ratings map to SM-2 quality:
 
 | Rating | Meaning | Effect |
 |---|---|---|
-| Again | Missed it | Relearn soon, ease drops |
-| Hard | Barely | Shorter interval |
-| Good | Got it | Standard interval |
-| Easy | Trivial | Longer interval |
+| Again | Missed it | Relearn from the first step, ease drops |
+| Hard | Barely | Repeat the current learning step / shorter interval |
+| Good | Got it | Advance a learning step or use the standard interval |
+| Easy | Trivial | Skip learning steps / longer interval |
 
 ### Progress and motivation
 - Per-card and per-set **mastery** estimates.
@@ -174,10 +189,10 @@ node scripts/smoke.mjs
 ```
 
 This launches a headless Chrome/Edge, drives the real UI through the DevTools
-Protocol, and checks 47 behaviors (sample decks, CRUD, all study modes, editor
-save, export, progress, due review, persistence, pronunciation buttons,
-in-session edit/delete, word info, and settings). It also fails on any runtime
-console error.
+Protocol, and checks 56 behaviors (sample decks, CRUD, all study modes, learning
+steps, daily caps, study-ahead, editor save, export, progress, due review,
+persistence, pronunciation buttons, in-session edit/delete, word info, and
+settings). It also fails on any runtime console error.
 
 ## Roadmap ideas
 

@@ -6,7 +6,7 @@ import { store } from '../db.js';
 import { icon } from '../icons.js';
 import { esc, shuffle, sample, answersMatch, plural, clamp } from '../utils.js';
 import { toast, confirmDialog } from '../components.js';
-import { schedule, isDue } from '../srs.js';
+import { schedule, isDue, orderByPriority } from '../srs.js';
 import { cardToolsHTML, bindCardTools } from '../cardtools.js';
 
 const MODE_META = {
@@ -91,6 +91,10 @@ export function mountStudy(params) {
   const { set, pool } = resolved;
   const valid = set.cards.filter((c) => c.term && c.definition);
 
+  // The "not enough cards" screen has no study stage to mount into.
+  const stage = document.getElementById('study-stage');
+  if (!stage) return;
+
   // Theme toggle inside study.
   const themeBtn = document.getElementById('study-theme');
   themeBtn?.addEventListener('click', () => {
@@ -98,7 +102,6 @@ export function mountStudy(params) {
     themeBtn.innerHTML = icon(store.getState().settings.theme === 'dark' ? 'sun' : 'moon');
   });
 
-  const stage = document.getElementById('study-stage');
   const counter = document.getElementById('study-counter');
   const progress = document.getElementById('study-progress');
 
@@ -111,7 +114,7 @@ export function mountStudy(params) {
   const cleanupFns = [];
   window.__routeCleanup = () => cleanupFns.forEach((fn) => fn());
 
-  const engine = { mode, set, pool, valid, stage, setProgress, cleanupFns };
+  const engine = { mode, set, pool, valid, stage, setProgress, cleanupFns, extra: !!params.extra };
   if (mode === 'flashcards') startFlashcards(engine);
   else if (mode === 'learn') startLearn(engine);
   else if (mode === 'test') startTest(engine);
@@ -130,10 +133,79 @@ function notFound() {
     </div></main>`;
 }
 
+/* --------------------------- session planning ------------------------- */
+
+/**
+ * Build a due-first study queue that respects today's new/review limits.
+ * Reviews are ordered by urgency; new cards are interleaved so a session
+ * does not turn into an all-new grind.
+ */
+function buildStudyQueue(cards, { extra = false } = {}) {
+  const now = Date.now();
+  const settings = store.getState().settings;
+  const used = store.countsToday();
+
+  const due = cards.filter((c) => isDue(c.srs, now));
+  // "Study ahead" deliberately includes cards that are not due yet.
+  const source = extra ? cards : due;
+  const reviews = source.filter((c) => c.srs && c.srs.lastReview);
+  const fresh = source.filter((c) => !c.srs || !c.srs.lastReview);
+
+  const EXTRA_SESSION_CAP = 100;
+  const reviewBudget = extra
+    ? EXTRA_SESSION_CAP
+    : Math.max(0, (settings.reviewsPerDay ?? 200) - used.review);
+  const newBudget = extra
+    ? EXTRA_SESSION_CAP
+    : Math.max(0, (settings.newPerDay ?? 20) - used.new);
+
+  const pickedReviews = orderByPriority(reviews, now).slice(0, reviewBudget);
+  const pickedNew = orderByPriority(fresh, now).slice(0, newBudget);
+
+  return {
+    queue: mixQueues(pickedReviews, pickedNew),
+    dueReviews: reviews.length,
+    newCards: fresh.length,
+    sessionReviews: pickedReviews.length,
+    sessionNew: pickedNew.length,
+    reviewBudget,
+    newBudget,
+    blocked: !extra && due.length > 0 && pickedReviews.length + pickedNew.length === 0,
+    ahead: !extra && due.length === 0,
+  };
+}
+
+/** Put one new card after every few reviews. */
+function mixQueues(reviews, fresh, ratio = 4) {
+  const out = [];
+  let r = 0;
+  let n = 0;
+  while (r < reviews.length || n < fresh.length) {
+    for (let k = 0; k < ratio && r < reviews.length; k += 1) out.push(reviews[r++]);
+    if (n < fresh.length) out.push(fresh[n++]);
+  }
+  return out;
+}
+
+/** Short label for the session footer. */
+function sessionSummary(plan) {
+  if (plan.ahead) return 'Free review';
+  if (plan.sessionReviews && plan.sessionNew) {
+    return `${plan.sessionReviews} review · ${plan.sessionNew} new`;
+  }
+  if (plan.sessionNew) return `${plan.sessionNew} new`;
+  if (plan.sessionReviews) return `${plan.sessionReviews} review`;
+  return `${plan.queue.length} cards`;
+}
+
 /* ============================ FLASHCARDS ============================== */
 
-function startFlashcards({ set, valid, stage, setProgress, cleanupFns }) {
-  let order = shuffle(valid);
+function startFlashcards({ set, valid, stage, setProgress, cleanupFns, extra }) {
+  const plan = buildStudyQueue(valid, { extra });
+  if (plan.blocked) return showLimitReached(stage, set, 'flashcards');
+
+  // Nothing due: keep the old browse-the-whole-deck behavior.
+  let order = plan.queue.length ? plan.queue : shuffle(valid);
   let i = 0;
   let flipped = false;
   const reviewed = new Set();
@@ -161,6 +233,8 @@ function startFlashcards({ set, valid, stage, setProgress, cleanupFns }) {
 
       <div class="study-tools">
         <span class="faint">Card ${i + 1} of ${order.length}</span>
+        <span class="faint">${sessionSummary(plan)}</span>
+        ${card.srs?.leech ? `<span class="chip chip--danger" title="This card keeps lapsing — edit it to make it stick">Leech</span>` : ''}
         ${cardToolsHTML()}
       </div>
 
@@ -241,8 +315,10 @@ function startFlashcards({ set, valid, stage, setProgress, cleanupFns }) {
   };
   const rate = (rating) => {
     const card = order[i];
+    const wasNew = !card.srs || !card.srs.lastReview;
+    const firstRating = !reviewed.has(card.id);
     card.srs = schedule(card.srs, rating);
-    store.recordReview();
+    store.recordReview({ wasNew, counts: firstRating });
     reviewed.add(card.id);
     if (i < order.length - 1) {
       i += 1;
@@ -285,13 +361,16 @@ function startFlashcards({ set, valid, stage, setProgress, cleanupFns }) {
 
 /* ================================ LEARN =============================== */
 
-function startLearn({ set, pool, valid, stage, setProgress, cleanupFns }) {
-  const due = valid.filter((c) => isDue(c.srs));
-  const source = due.length ? due : valid;
-  let queue = shuffle(source);
+function startLearn({ set, pool, valid, stage, setProgress, cleanupFns, extra }) {
+  const plan = buildStudyQueue(valid, { extra });
+  if (plan.blocked) return showLimitReached(stage, set, 'learn');
+  if (!plan.queue.length) return showNothingDue(stage, set, 'learn');
+
+  let queue = plan.queue;
   let totalUnique = new Set(queue.map((c) => c.id)).size;
   const mastered = new Set();
   const missed = new Set();
+  const counted = new Set();
   let correctFirstTry = 0;
   let totalAttempts = 0;
   let removeKey = () => {};
@@ -329,11 +408,12 @@ function startLearn({ set, pool, valid, stage, setProgress, cleanupFns }) {
         <div id="feedback"></div>
       </div>
       <div class="study-tools">
+        ${card.srs?.leech ? `<span class="chip chip--danger" title="This card keeps lapsing — edit it to make it stick">Leech — edit this card</span>` : ''}
         ${cardToolsHTML()}
       </div>
       <div class="study__controls">
         <button class="btn btn--ghost btn--sm" id="end-learn">${icon('x')} End session</button>
-        <span class="faint" style="font-size:12px">${due.length ? `${plural(due.length, 'card')} due for review` : 'Learning all cards'}</span>
+        <span class="faint" style="font-size:12px">${sessionSummary(plan)}</span>
       </div>
     `;
 
@@ -342,7 +422,6 @@ function startLearn({ set, pool, valid, stage, setProgress, cleanupFns }) {
       if (locked) return;
       locked = true;
       removeKey();
-      totalAttempts += 1;
       const correctValue = card[field === 'definition' ? 'definition' : 'term'];
       const isCorrect = value === correctValue;
 
@@ -352,19 +431,29 @@ function startLearn({ set, pool, valid, stage, setProgress, cleanupFns }) {
       });
       if (!isCorrect) btn.classList.add('is-wrong');
 
+      const wasNew = !card.srs || !card.srs.lastReview;
+      const firstRating = !counted.has(card.id);
+      if (firstRating) totalAttempts += 1;
+
       if (isCorrect) {
-        if (!mastered.has(card.id)) {
-          mastered.add(card.id);
-          if (!missed.has(card.id)) correctFirstTry += 1;
-        }
-        card.srs = schedule(card.srs, missed.has(card.id) ? 'hard' : 'good');
-        store.recordReview();
+        const wasMastered = mastered.has(card.id);
+        card.srs = schedule(card.srs, 'good');
+        store.recordReview({ wasNew, counts: firstRating });
+        counted.add(card.id);
         queue.shift();
+        if (card.srs.learning) {
+          // Still walking the 1m/10m learning steps — see it again.
+          queue.push(card);
+        } else {
+          mastered.add(card.id);
+          if (!wasMastered && !missed.has(card.id)) correctFirstTry += 1;
+        }
         cancelFeedback = showFeedback('correct', 'Correct', () => render());
       } else {
         missed.add(card.id);
         card.srs = schedule(card.srs, 'again');
-        store.recordReview();
+        store.recordReview({ wasNew, counts: firstRating });
+        counted.add(card.id);
         queue.shift();
         queue.push(card); // revisit later this session
         cancelFeedback = showFeedback('wrong', `Not quite — ${esc(correctValue)}`, () => render());
@@ -422,6 +511,7 @@ function startLearn({ set, pool, valid, stage, setProgress, cleanupFns }) {
     queue = queue.filter((c) => c.id !== card.id);
     mastered.delete(card.id);
     missed.delete(card.id);
+    counted.delete(card.id);
     const vi = valid.indexOf(card);
     if (vi >= 0) valid.splice(vi, 1);
     const pi = pool.indexOf(card);
@@ -464,22 +554,15 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
   const submit = (isCorrect, correctText, afterFeedback) => {
     answered += 1;
     if (isCorrect) correct += 1;
-    card_srs_update(isCorrect);
+    // Test is practice: it should not move due dates or inflate intervals.
+    store.recordReview({ practice: true });
     cancelFeedback = showFeedback(isCorrect ? 'correct' : 'wrong', isCorrect ? 'Correct' : `Answer: ${esc(correctText)}`, () => {
       i += 1;
       render();
     });
   };
 
-  let currentCard = null;
-  const card_srs_update = (isCorrect) => {
-    if (!currentCard) return;
-    currentCard.srs = schedule(currentCard.srs, isCorrect ? 'good' : 'again');
-    store.recordReview();
-  };
-
   const renderMC = (card) => {
-    currentCard = card;
     const { question, options, field } = buildMultipleChoice(card, pool);
     const correctValue = card[field === 'definition' ? 'definition' : 'term'];
     stage.innerHTML = `
@@ -514,7 +597,6 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
   };
 
   const renderWritten = (card) => {
-    currentCard = card;
     const askDefinition = Math.random() < 0.5;
     const prompt = askDefinition ? card.term : card.definition;
     const expected = askDefinition ? card.definition : card.term;
@@ -549,7 +631,6 @@ function startTest({ set, pool, valid, stage, setProgress, cleanupFns }) {
   };
 
   const renderTF = (card) => {
-    currentCard = card;
     const others = pool.filter((c) => c.id !== card.id && c.definition);
     const makeTrue = Math.random() < 0.5 || !others.length;
     const shown = makeTrue ? card.definition : sample(others, 1)[0].definition;
@@ -634,6 +715,7 @@ function testHeader(i, total) {
   return `
     <div class="row" style="justify-content:space-between;margin-bottom:14px">
       <span class="chip chip--brand">Question ${i + 1} of ${total}</span>
+      <span class="chip" title="Test does not change due dates">Practice · schedule unchanged</span>
     </div>`;
 }
 
@@ -664,6 +746,7 @@ function startMatch({ set, valid, stage, setProgress, cleanupFns }) {
         <span>Time <strong id="match-time">0.0s</strong></span>
         <span>Moves <strong id="match-moves">0</strong></span>
         <span>Pairs <strong id="match-pairs">${matched}/${pairCount}</strong></span>
+        <span class="chip" title="Match does not change due dates">Practice</span>
       </div>
       <div class="match-board" id="match-board">
         ${board
@@ -723,10 +806,9 @@ function startMatch({ set, valid, stage, setProgress, cleanupFns }) {
       matched += 1;
       setProgress(matched, pairCount);
 
-      const card = chosen.find((c) => c.id === tile.dataset.card);
-      if (card) {
-        card.srs = schedule(card.srs, 'good');
-        store.recordReview();
+      if (chosen.some((c) => c.id === tile.dataset.card)) {
+        // Match is practice: don't touch the SRS schedule.
+        store.recordReview({ practice: true });
       }
       first = null;
       updateStats();
@@ -827,6 +909,56 @@ function showFeedback(type, message, onNext) {
   document.addEventListener('keydown', onKey);
   btn.focus();
   return cancel;
+}
+
+/** Shown when today's new/review limits are exhausted. */
+function showLimitReached(stage, set, mode) {
+  const extraHref = `#/study/${set.id}/${mode}/extra`;
+  const backHref = set.id === '__due__' ? '#/' : `#/set/${set.id}`;
+  const used = store.countsToday();
+  const settings = store.getState().settings;
+
+  stage.innerHTML = `
+    <div class="empty">
+      <div class="empty__icon">${icon('clock')}</div>
+      <h3>Daily limit reached</h3>
+      <p>
+        You've used ${used.review} of ${settings.reviewsPerDay} reviews and
+        ${used.new} of ${settings.newPerDay} new cards today. Come back tomorrow,
+        or continue with extra cards.
+      </p>
+      <div class="row gap-8" style="justify-content:center;flex-wrap:wrap">
+        <a href="${extraHref}" class="btn btn--primary">${icon('zap')} Study ahead</a>
+        <a href="${backHref}" class="btn btn--outline">${icon('back')} Back to set</a>
+      </div>
+    </div>`;
+
+  const counter = document.getElementById('study-counter');
+  if (counter) counter.textContent = 'Limit reached';
+  const bar = document.getElementById('study-progress');
+  if (bar) bar.style.width = '100%';
+}
+
+/** Shown when nothing is due and the learner has not asked to study ahead. */
+function showNothingDue(stage, set, mode) {
+  const extraHref = `#/study/${set.id}/${mode}/extra`;
+  const backHref = set.id === '__due__' ? '#/' : `#/set/${set.id}`;
+
+  stage.innerHTML = `
+    <div class="empty">
+      <div class="empty__icon">${icon('checkCircle')}</div>
+      <h3>Nothing due</h3>
+      <p>You're ahead of schedule. Study ahead if you want extra practice.</p>
+      <div class="row gap-8" style="justify-content:center;flex-wrap:wrap">
+        <a href="${extraHref}" class="btn btn--primary">${icon('zap')} Study ahead</a>
+        <a href="${backHref}" class="btn btn--outline">${icon('back')} Back to set</a>
+      </div>
+    </div>`;
+
+  const counter = document.getElementById('study-counter');
+  if (counter) counter.textContent = 'All caught up';
+  const bar = document.getElementById('study-progress');
+  if (bar) bar.style.width = '100%';
 }
 
 /** Shown when every card in the current session was deleted. */

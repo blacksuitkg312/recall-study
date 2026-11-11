@@ -187,6 +187,20 @@ export function openSettings() {
         <input id="st-goal" class="input" type="number" min="1" max="500" value="${s.dailyGoal}" />
       </div>
 
+      <div class="row gap-8" style="align-items:flex-start">
+        <div class="field" style="flex:1">
+          <label for="st-new">New cards / day</label>
+          <input id="st-new" class="input" type="number" min="0" max="200" value="${s.newPerDay ?? 20}" />
+        </div>
+        <div class="field" style="flex:1">
+          <label for="st-reviews">Reviews / day</label>
+          <input id="st-reviews" class="input" type="number" min="0" max="1000" value="${s.reviewsPerDay ?? 200}" />
+        </div>
+      </div>
+      <p class="faint" style="font-size:12px;margin-top:-6px;margin-bottom:14px">
+        Session caps keep reviews manageable. Set a limit to 0 to pause that queue.
+      </p>
+
       <div class="field">
         <label for="st-speech">Pronunciation language</label>
         <select id="st-speech" class="input">${languageOptions(speechCode)}</select>
@@ -221,6 +235,11 @@ export function openSettings() {
         onClick: () => {
           const theme = document.getElementById('st-theme')?.value || 'light';
           const dailyGoal = Number(document.getElementById('st-goal')?.value) || 20;
+          const newRaw = document.getElementById('st-new')?.value;
+          const reviewsRaw = document.getElementById('st-reviews')?.value;
+          const newPerDay = newRaw === '' || newRaw == null ? 20 : Number(newRaw);
+          const reviewsPerDay =
+            reviewsRaw === '' || reviewsRaw == null ? 200 : Number(reviewsRaw);
           const speech = document.getElementById('st-speech')?.value || 'en';
           const sourceLang = document.getElementById('st-source')?.value || 'en';
           const targetLang = document.getElementById('st-target')?.value || 'es';
@@ -229,6 +248,8 @@ export function openSettings() {
           store.updateSettings({
             theme,
             dailyGoal,
+            newPerDay: Number.isFinite(newPerDay) ? newPerDay : 20,
+            reviewsPerDay: Number.isFinite(reviewsPerDay) ? reviewsPerDay : 200,
             speechLang: speechForCode(speech),
             sourceLang,
             targetLang,

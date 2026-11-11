@@ -213,6 +213,18 @@ async function main() {
         store.resetAll();
         await sleep(200);
 
+        // Scheduler: learning steps, graduation, and lapses.
+        const srs = await import('./js/srs.js');
+        const t0 = Date.now();
+        const learn1 = srs.schedule(srs.newSrs(), 'good', t0);
+        check('new card enters learning step', learn1.learning === true && learn1.step === 1);
+        const learn2 = srs.schedule(learn1, 'good', t0);
+        check('second good graduates card', learn2.learning === false && learn2.interval >= 1);
+        const easyCard = srs.schedule(srs.newSrs(), 'easy', t0);
+        check('easy graduates immediately', easyCard.learning === false && easyCard.interval === 3);
+        const relearn = srs.schedule(learn2, 'again', t0);
+        check('again starts relearning', relearn.learning === true && relearn.lapses === 1);
+
         // Empty state should offer a one-click sample deck.
         check('empty state offers sample', !!document.querySelector('#sample-btn'));
         document.querySelector('#sample-btn')?.click();
@@ -418,6 +430,10 @@ async function main() {
         await sleep(300);
         check('settings has pronunciation language', !!document.querySelector('#st-speech'));
         check('settings has online toggle', !!document.querySelector('#st-online'));
+        check(
+          'settings has session limits',
+          !!document.querySelector('#st-new') && !!document.querySelector('#st-reviews')
+        );
         document.querySelector('.modal__actions [data-action="0"]')?.click();
         await sleep(250);
 
@@ -451,6 +467,41 @@ async function main() {
         location.hash = '#/due';
         await sleep(400);
         check('due route handled', !!document.querySelector('#study-stage') || document.body.textContent.includes('Due review') || document.body.textContent.includes('Not enough cards'));
+
+        // Daily caps: one new card, then a hard stop with a study-ahead escape.
+        const capSet = store.createSet({
+          title: 'Cap Test',
+          cards: [
+            { term: 'cap1', definition: 'one' },
+            { term: 'cap2', definition: 'two' },
+            { term: 'cap3', definition: 'three' },
+          ],
+        });
+        store.state.activity.counts = {};
+        store.updateSettings({ newPerDay: 1, reviewsPerDay: 200 });
+        location.hash = '#/study/' + capSet.id + '/learn';
+        await sleep(400);
+        check(
+          'new-card cap limits session',
+          (document.querySelector('#study-counter')?.textContent || '').includes('/ 1'),
+          document.querySelector('#study-counter')?.textContent || ''
+        );
+
+        store.updateSettings({ newPerDay: 0 });
+        location.hash = '#/set/' + capSet.id;
+        await sleep(250);
+        location.hash = '#/study/' + capSet.id + '/learn';
+        await sleep(400);
+        check('daily limit screen appears', document.body.textContent.includes('Daily limit reached'));
+        check('study ahead link present', !!document.querySelector('a[href*="/extra"]'));
+        document.querySelector('a[href*="/extra"]')?.click();
+        await sleep(400);
+        check('study ahead bypasses limits', document.querySelectorAll('.option').length >= 2);
+
+        store.updateSettings({ newPerDay: 20, reviewsPerDay: 200 });
+        store.deleteSet(capSet.id);
+        location.hash = '#/';
+        await sleep(300);
 
         const state = store.getState();
         check('reviews recorded (xp > 0)', state.activity.xp > 0, 'xp=' + state.activity.xp);

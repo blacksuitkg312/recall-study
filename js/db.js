@@ -3,7 +3,7 @@
    ========================================================================== */
 
 import { uid, dateKey, daysBetween } from './utils.js';
-import { newSrs } from './srs.js';
+import { newSrs, normalizeSrs } from './srs.js';
 
 const STORAGE_KEY = 'recall.db.v1';
 const SCHEMA_VERSION = 1;
@@ -13,10 +13,18 @@ const ACCENTS = [
   '#f59e0b', '#10b981', '#06b6d4', '#3b82f6',
 ];
 
+function clampInt(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(n)));
+}
+
 function defaultSettings() {
   return {
     theme: 'light',
     dailyGoal: 20,
+    newPerDay: 20,
+    reviewsPerDay: 200,
     speechLang: 'en-US',
     sourceLang: 'en',
     targetLang: 'es',
@@ -34,6 +42,7 @@ function defaultState() {
       streak: 0,
       lastStudyDate: null,
       history: {}, // { 'YYYY-MM-DD': cardsStudied }
+      counts: {}, // { 'YYYY-MM-DD': { new, review } } for daily limits
     },
   };
 }
@@ -42,14 +51,22 @@ function migrate(state) {
   // Future schema migrations go here.
   if (!state.version) state.version = SCHEMA_VERSION;
   state.settings = { ...defaultSettings(), ...(state.settings || {}) };
-  if (!state.activity) state.activity = { xp: 0, streak: 0, lastStudyDate: null, history: {} };
+  state.settings.dailyGoal = clampInt(state.settings.dailyGoal, 1, 500, 20);
+  state.settings.newPerDay = clampInt(state.settings.newPerDay, 0, 200, 20);
+  state.settings.reviewsPerDay = clampInt(state.settings.reviewsPerDay, 0, 1000, 200);
+
+  if (!state.activity) {
+    state.activity = { xp: 0, streak: 0, lastStudyDate: null, history: {}, counts: {} };
+  }
   if (!state.activity.history) state.activity.history = {};
+  if (!state.activity.counts) state.activity.counts = {};
+
   state.sets = (state.sets || []).map((s) => ({
     ...s,
     accent: s.accent || ACCENTS[Math.floor(Math.random() * ACCENTS.length)],
     cards: (s.cards || []).map((c) => ({
       ...c,
-      srs: c.srs || newSrs(),
+      srs: normalizeSrs(c.srs),
     })),
   }));
   return state;
@@ -119,9 +136,13 @@ class Store {
   /** Update any settings in one go. */
   updateSettings(patch = {}) {
     this.state.settings = { ...this.state.settings, ...patch };
-    this.state.settings.dailyGoal = Math.max(
-      1,
-      Math.min(500, Number(this.state.settings.dailyGoal) || 20)
+    this.state.settings.dailyGoal = clampInt(this.state.settings.dailyGoal, 1, 500, 20);
+    this.state.settings.newPerDay = clampInt(this.state.settings.newPerDay, 0, 200, 20);
+    this.state.settings.reviewsPerDay = clampInt(
+      this.state.settings.reviewsPerDay,
+      0,
+      1000,
+      200
     );
     this._applyTheme();
     this._emit();
@@ -218,8 +239,21 @@ class Store {
     if (!set) return null;
     const card = set.cards.find((c) => c.id === cardId);
     if (!card) return null;
-    if (patch.term !== undefined) card.term = String(patch.term).trim();
-    if (patch.definition !== undefined) card.definition = String(patch.definition).trim();
+
+    const nextTerm = patch.term !== undefined ? String(patch.term).trim() : card.term;
+    const nextDefinition =
+      patch.definition !== undefined ? String(patch.definition).trim() : card.definition;
+    const contentChanged = nextTerm !== card.term || nextDefinition !== card.definition;
+
+    card.term = nextTerm;
+    card.definition = nextDefinition;
+
+    // Rewriting a leech card is the fix: clear the flag so it can re-enter
+    // normal rotation without being treated as a problem card forever.
+    if (contentChanged && card.srs?.leech) {
+      card.srs = { ...card.srs, leech: false };
+    }
+
     set.updatedAt = Date.now();
     this._emit();
     return card;
@@ -242,12 +276,18 @@ class Store {
       .filter((c) => String(c.term).trim() || String(c.definition).trim())
       .map((c) => {
         const existing = c.id && byId.get(c.id);
+        const term = String(c.term || '').trim();
+        const definition = String(c.definition || '').trim();
+        let srs = existing ? normalizeSrs(existing.srs) : newSrs();
+        if (existing && (existing.term !== term || existing.definition !== definition) && srs.leech) {
+          srs = { ...srs, leech: false };
+        }
         return {
           id: c.id || uid('card_'),
-          term: String(c.term || '').trim(),
-          definition: String(c.definition || '').trim(),
+          term,
+          definition,
           createdAt: existing ? existing.createdAt : Date.now(),
-          srs: existing ? existing.srs : newSrs(),
+          srs,
         };
       });
     set.updatedAt = Date.now();
@@ -256,8 +296,15 @@ class Store {
 
   /* ----------------------------- activity ----------------------------- */
 
-  /** Record a single card review. Updates XP, streak, daily history. */
-  recordReview() {
+  /**
+   * Record a single card review. Updates XP, streak and daily history.
+   *
+   * @param {object} [opts]
+   * @param {boolean} [opts.wasNew]    card had never been reviewed before
+   * @param {boolean} [opts.practice]  Test/Match practice: XP + streak only
+   * @param {boolean} [opts.counts]    false for repeat ratings of one card
+   */
+  recordReview({ wasNew = false, practice = false, counts = true } = {}) {
     const act = this.state.activity;
     const today = dateKey();
 
@@ -273,8 +320,33 @@ class Store {
     }
 
     act.history[today] = (act.history[today] || 0) + 1;
+
+    if (counts && !practice) {
+      if (!act.counts) act.counts = {};
+      const day = act.counts[today] || { new: 0, review: 0 };
+      if (wasNew) day.new += 1;
+      else day.review += 1;
+      act.counts[today] = day;
+      this._pruneCounts();
+    }
+
     act.xp += 10;
     this._emit();
+  }
+
+  /** Keep the per-day new/review counters from growing forever. */
+  _pruneCounts() {
+    const counts = this.state.activity.counts || {};
+    const keys = Object.keys(counts).sort();
+    if (keys.length > 90) {
+      keys.slice(0, keys.length - 90).forEach((key) => delete counts[key]);
+    }
+  }
+
+  /** New/review counts already used today (for daily limits). */
+  countsToday() {
+    const day = this.state.activity.counts?.[dateKey()];
+    return { new: day?.new || 0, review: day?.review || 0 };
   }
 
   /** Cards studied today. */

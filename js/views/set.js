@@ -79,6 +79,7 @@ export function renderSet({ id }) {
                       <span class="term-row__meta">
                         <span class="chip ${cardMastery(c.srs) >= 70 ? 'chip--success' : ''}" title="Mastery">${cardMastery(c.srs)}%</span>
                         <span class="chip" title="Next review">${dueLabel(c.srs)}</span>
+                        ${c.srs?.leech ? `<span class="chip chip--danger" title="Keeps lapsing — rewrite this card">Leech</span>` : ''}
                       </span>
                     </span>
                   </div>`
